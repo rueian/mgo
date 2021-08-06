@@ -350,6 +350,7 @@ func ParseURL(url string) (*DialInfo, error) {
 	var readPreferenceTagSets []bson.D
 	minPoolSize := 0
 	maxIdleTimeMS := 0
+	maxLifeTimeMS := 0
 	safe := Safe{}
 	for _, opt := range uinfo.options {
 		switch opt.key {
@@ -434,6 +435,14 @@ func ParseURL(url string) (*DialInfo, error) {
 			if maxIdleTimeMS < 0 {
 				return nil, errors.New("bad value (negative) for maxIdleTimeMS: " + opt.value)
 			}
+		case "maxLifeTimeMS":
+			maxLifeTimeMS, err = strconv.Atoi(opt.value)
+			if err != nil {
+				return nil, errors.New("bad value for maxLifeTimeMS: " + opt.value)
+			}
+			if maxLifeTimeMS < 0 {
+				return nil, errors.New("bad value (negative) for maxLifeTimeMS: " + opt.value)
+			}
 		case "connect":
 			if opt.value == "direct" {
 				direct = true
@@ -471,6 +480,7 @@ func ParseURL(url string) (*DialInfo, error) {
 		ReplicaSetName: setName,
 		MinPoolSize:    minPoolSize,
 		MaxIdleTimeMS:  maxIdleTimeMS,
+		MaxLifeTimeMS:  maxLifeTimeMS,
 	}
 	if ssl && info.DialServer == nil {
 		// Set DialServer only if nil, we don't want to override user's settings.
@@ -590,6 +600,10 @@ type DialInfo struct {
 	// before being removed and closed.
 	MaxIdleTimeMS int
 
+	// The maximum number of milliseconds that a connection can remain in the pool
+	// before being removed and closed.
+	MaxLifeTimeMS int
+
 	// DialServer optionally specifies the dial function for establishing
 	// connections with the MongoDB servers.
 	DialServer func(addr *ServerAddr) (net.Conn, error)
@@ -629,6 +643,7 @@ func (i *DialInfo) Copy() *DialInfo {
 		Direct:         i.Direct,
 		MinPoolSize:    i.MinPoolSize,
 		MaxIdleTimeMS:  i.MaxIdleTimeMS,
+		MaxLifeTimeMS:  i.MaxLifeTimeMS,
 		DialServer:     i.DialServer,
 		Dial:           i.Dial,
 	}
@@ -2911,7 +2926,6 @@ func (p *Pipe) SetMaxTime(d time.Duration) *Pipe {
 	p.maxTimeMS = int64(d / time.Millisecond)
 	return p
 }
-
 
 // Collation allows to specify language-specific rules for string comparison,
 // such as rules for lettercase and accent marks.

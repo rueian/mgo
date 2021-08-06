@@ -53,6 +53,7 @@ type mongoSocket struct {
 	dead           error
 	serverInfo     *mongoServerInfo
 	closeAfterIdle bool
+	firstTimeUsed  time.Time
 	lastTimeUsed   time.Time // for time based idle socket release
 	sendMeta       sync.Once
 
@@ -184,11 +185,12 @@ type requestInfo struct {
 
 func newSocket(server *mongoServer, conn net.Conn, info *DialInfo) *mongoSocket {
 	socket := &mongoSocket{
-		conn:       conn,
-		addr:       server.Addr,
-		server:     server,
-		replyFuncs: make(map[uint32]replyFunc),
-		dialInfo:   info,
+		conn:          conn,
+		addr:          server.Addr,
+		server:        server,
+		replyFuncs:    make(map[uint32]replyFunc),
+		dialInfo:      info,
+		firstTimeUsed: coarseTime.Now(),
 	}
 	socket.gotNonce.L = &socket.Mutex
 	if err := socket.InitialAcquire(server.Info(), info); err != nil {
@@ -274,13 +276,19 @@ func (socket *mongoSocket) Release() {
 		stats.socketsInUse(-1)
 		server := socket.server
 		closeAfterIdle := socket.closeAfterIdle
+		ts := socket.firstTimeUsed
 		socket.Unlock()
 		socket.LogoutAll()
 		if closeAfterIdle {
 			socket.Close()
 		} else if server != nil {
 			// If the socket is dead server is nil.
-			server.RecycleSocket(socket)
+			if server.dialInfo.MaxLifeTimeMS != 0 &&
+				coarseTime.Now().Sub(ts) > time.Duration(server.dialInfo.MaxLifeTimeMS)*time.Millisecond {
+				socket.Close()
+			} else {
+				server.RecycleSocket(socket)
+			}
 		}
 	} else {
 		socket.Unlock()
