@@ -29,6 +29,7 @@ package mgo
 import (
 	"crypto/md5"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -36,6 +37,7 @@ import (
 
 	"github.com/globalsign/mgo/bson"
 	"github.com/globalsign/mgo/internal/scram"
+	"github.com/xdg-go/stringprep"
 )
 
 type authCmd struct {
@@ -160,8 +162,12 @@ func (socket *mongoSocket) resetNonce() {
 
 func (socket *mongoSocket) Login(cred Credential) error {
 	socket.Lock()
-	if cred.Mechanism == "" && socket.serverInfo.MaxWireVersion >= 3 {
-		cred.Mechanism = "SCRAM-SHA-1"
+	if cred.Mechanism == "" {
+		if socket.serverInfo.MaxWireVersion >= 13 {
+			cred.Mechanism = "SCRAM-SHA-256"
+		} else if socket.serverInfo.MaxWireVersion >= 3 {
+			cred.Mechanism = "SCRAM-SHA-1"
+		}
 	}
 	for _, sockCred := range socket.creds {
 		if sockCred == cred {
@@ -274,7 +280,9 @@ func (socket *mongoSocket) loginPlain(cred Credential) error {
 func (socket *mongoSocket) loginSASL(cred Credential) error {
 	var sasl saslStepper
 	var err error
-	if cred.Mechanism == "SCRAM-SHA-1" {
+	if cred.Mechanism == "SCRAM-SHA-256" {
+		sasl, err = saslNewScram256(cred)
+	} else if cred.Mechanism == "SCRAM-SHA-1" {
 		// SCRAM is handled without external libraries.
 		sasl = saslNewScram(cred)
 	} else if len(cred.ServiceHost) > 0 {
@@ -328,9 +336,13 @@ func (socket *mongoSocket) loginSASL(cred Credential) error {
 			Start:          start,
 			Continue:       1 - start,
 			ConversationId: res.ConversationId,
-			Mechanism:      cred.Mechanism,
 			Payload:        payload,
 		}
+
+		if start == 1 {
+			cmd.Mechanism = cred.Mechanism
+		}
+
 		start = 0
 		err = socket.loginRun(cred.Source, &cmd, &res, func() error {
 			// See the comment on lock for why this is necessary.
@@ -358,6 +370,15 @@ func saslNewScram(cred Credential) *saslScram {
 	credsum.Write([]byte(cred.Username + ":mongo:" + cred.Password))
 	client := scram.NewClient(sha1.New, cred.Username, hex.EncodeToString(credsum.Sum(nil)))
 	return &saslScram{cred: cred, client: client}
+}
+
+func saslNewScram256(cred Credential) (*saslScram, error) {
+	passprep, err := stringprep.SASLprep.Prepare(cred.Password)
+	if err != nil {
+		return nil, err
+	}
+	client := scram.NewClient(sha256.New, cred.Username, passprep)
+	return &saslScram{cred: cred, client: client}, nil
 }
 
 type saslScram struct {
